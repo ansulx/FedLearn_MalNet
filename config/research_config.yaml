@@ -1,0 +1,81 @@
+# Research Configuration for Graph-based Federated Learning
+# Optimized for Full Server Training (No Constraints)
+# =====================================
+
+# Dataset Configuration (Full Server)
+dataset:
+  path: "malnet-graphs-tiny"
+  max_nodes: 2000  # Conservative max for stability
+  batch_size: 4    # Small batch size to avoid memory issues
+  num_workers: 0    # Disable workers to avoid multiprocessing issues
+  pin_memory: false  # Disable to reduce memory pressure
+  persistent_workers: false  # Disabled with num_workers=0
+
+# Model Configuration
+model:
+  num_classes: 5
+  gnn_type: "gcn"  # Options: gcn, gat, sage, simple
+  hidden_dim: 64  # Reduced for stability
+  num_layers: 2    # Shallower network for faster training
+  dropout: 0.3
+  activation: "relu"
+  normalization: "batch"
+
+# Federated Learning Configuration (Minimal for completion)
+federated:
+  num_clients: 3      # Minimal for quick completion
+  num_rounds: 10      # Just 10 rounds
+  local_epochs: 1     # 1 epoch per round
+  aggregation: "fedavg" # Options: fedavg, fedmedian, krum
+  participation_rate: 1.0  # All clients participate
+  split_strategy: "iid"  # Using IID to avoid numpy compatibility issues
+  alpha: 0.5  # Non-IID parameter (not used with IID)
+
+# Training Configuration
+training:
+  learning_rate: 0.001
+  weight_decay: 0.0001  # 1e-4 in explicit float format
+  momentum: 0.9
+  scheduler: "cosine"
+  warmup_epochs: 5
+  max_epochs: 100
+
+# Privacy Configuration
+privacy:
+  enabled: true
+  epsilon: 1.0
+  delta: 0.00001  # 1e-5 in explicit float format
+  noise_multiplier: 1.1
+  max_grad_norm: 1.0
+  secure_aggregation: false  # For research, can be enabled later
+
+# Server Configuration (CPU for stability)
+server:
+  device: "cpu"  # Use CPU to avoid GPU/PyG compatibility issues
+  mixed_precision: false  # Not available on CPU
+  gradient_accumulation: 1  # No accumulation needed
+  max_memory_usage: 0.9  # Use maximum available memory
+
+# Evaluation Configuration
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "auc"]
+  save_predictions: true
+  save_model: true
+  checkpoint_frequency: 10
+  early_stopping_patience: 20
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  save_logs: true
+  log_dir: "logs"
+  tensorboard: true
+  wandb: false  # Can be enabled for experiment tracking
+
+# Research Configuration
+research:
+  experiment_name: "graph_fl_malware_detection"
+  seed: 42
+  deterministic: true
+  benchmark_mode: false
+  profile_memory: false

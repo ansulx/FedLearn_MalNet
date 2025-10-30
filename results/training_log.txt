@@ -1,0 +1,32 @@
+🚀 Starting Federated Learning Training
+Device: cuda
+GPU: NVIDIA GeForce RTX 4090
+============================================================
+
+📊 Loading data...
+✓ Data loaded: 5000 train, 5000 val, 5000 test
+
+🔨 Creating global model...
+✓ Model created: 497,925 parameters
+
+👥 Creating 10 clients...
+✓ Data split complete
+✓ 10 clients created
+
+🎯 Starting training: 50 rounds
+============================================================
+
+📍 Round 1/50
+Traceback (most recent call last):
+  File "/home/nvn/rohit/fl_malnet/simple_fl_training.py", line 99, in <module>
+    client_results = client.train_local_model(global_weights, local_epochs)
+  File "/home/nvn/rohit/fl_malnet/core/federated_learning.py", line 373, in train_local_model
+    optimizer = optim.Adam(
+        self.model.parameters(),
+        lr=self.learning_rate,
+        weight_decay=self.weight_decay
+    )
+  File "/home/nvn/miniconda3/lib/python3.13/site-packages/torch/optim/adam.py", line 66, in __init__
+    if not 0.0 <= weight_decay:
+           ^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'float' and 'str'
