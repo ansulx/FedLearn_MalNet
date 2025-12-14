@@ -513,11 +513,15 @@ class TerminalDashboard:
         self.log_messages = deque(maxlen=10)
         
     def clear_screen(self):
+        """Clear screen and ensure output is flushed"""
         os.system('clear' if os.name != 'nt' else 'cls')
+        sys.stdout.flush()
     
     def log(self, message):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.log_messages.append(f"[{timestamp}] {message}")
+        # Force flush to ensure log appears immediately
+        sys.stdout.flush()
     
     def draw_progress_bar(self, progress, width=40):
         filled = int(width * progress)
@@ -555,37 +559,37 @@ class TerminalDashboard:
         return lines
     
     def render(self):
-        """Render full dashboard"""
+        """Render full dashboard with forced output flushing"""
         self.clear_screen()
         
         # Header
-        print(f"\n{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}")
-        print(f"{Color.CYAN}{Color.BOLD}{'🖥️  FEDERATED LEARNING SERVER - LIVE DASHBOARD':^80}{Color.RESET}")
-        print(f"{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}\n")
+        print(f"\n{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
+        print(f"{Color.CYAN}{Color.BOLD}{'🖥️  FEDERATED LEARNING SERVER - LIVE DASHBOARD':^80}{Color.RESET}", flush=True)
+        print(f"{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
         
         # Server Status Box
         runtime = time.time() - self.start_time
         status_color = Color.GREEN if self.server.status == "RUNNING" else Color.YELLOW
         
-        print(f"{Color.BLUE}┌{'─' * 78}┐{Color.RESET}")
-        print(f"{Color.BLUE}│ {Color.BOLD}SERVER STATUS{' ' * 65}│{Color.RESET}")
-        print(f"{Color.BLUE}├{'─' * 78}┤{Color.RESET}")
+        print(f"{Color.BLUE}┌{'─' * 78}┐{Color.RESET}", flush=True)
+        print(f"{Color.BLUE}│ {Color.BOLD}SERVER STATUS{' ' * 65}│{Color.RESET}", flush=True)
+        print(f"{Color.BLUE}├{'─' * 78}┤{Color.RESET}", flush=True)
         print(f"{Color.BLUE}│{Color.RESET} Status: {status_color}● {self.server.status:<15}{Color.RESET} "
               f"Round: {Color.BOLD}{self.server.current_round}/{self.server.total_rounds}{Color.RESET}     "
               f"Device: {Color.CYAN}{self.server.device}{Color.RESET}     "
-              f"Runtime: {int(runtime)}s {Color.BLUE}│{Color.RESET}")
+              f"Runtime: {int(runtime)}s {Color.BLUE}│{Color.RESET}", flush=True)
         print(f"{Color.BLUE}│{Color.RESET} Global Accuracy: {Color.GREEN}{Color.BOLD}{self.server.global_accuracy:.2f}%{Color.RESET}  "
               f"Loss: {self.server.global_loss:.4f}  "
               f"Samples: {self.server.total_samples:,} "
-              f"{Color.BLUE}│{Color.RESET}")
+              f"{Color.BLUE}│{Color.RESET}", flush=True)
         print(f"{Color.BLUE}│{Color.RESET} Connected Devices: {Color.GREEN}{len(self.server.connected_devices)}/{len(self.devices)}{Color.RESET}"
-              f"{' ' * 48}{Color.BLUE}│{Color.RESET}")
-        print(f"{Color.BLUE}└{'─' * 78}┘{Color.RESET}\n")
+              f"{' ' * 48}{Color.BLUE}│{Color.RESET}", flush=True)
+        print(f"{Color.BLUE}└{'─' * 78}┘{Color.RESET}\n", flush=True)
         
         # Connected Devices Box
-        print(f"{Color.MAGENTA}┌{'─' * 78}┐{Color.RESET}")
-        print(f"{Color.MAGENTA}│ {Color.BOLD}CONNECTED DEVICES (Real-Time Status){' ' * 42}│{Color.RESET}")
-        print(f"{Color.MAGENTA}├{'─' * 78}┤{Color.RESET}")
+        print(f"{Color.MAGENTA}┌{'─' * 78}┐{Color.RESET}", flush=True)
+        print(f"{Color.MAGENTA}│ {Color.BOLD}CONNECTED DEVICES (Real-Time Status){' ' * 42}│{Color.RESET}", flush=True)
+        print(f"{Color.MAGENTA}├{'─' * 78}┤{Color.RESET}", flush=True)
         
         for device in self.devices:
             status_symbol = {
@@ -599,31 +603,34 @@ class TerminalDashboard:
                   f"{status_symbol} {device.status:<10}{Color.RESET} "
                   f"Acc: {device.local_accuracy:5.1f}%  "
                   f"Samples: {device.num_samples:>5} "
-                  f"{Color.MAGENTA}│{Color.RESET}")
+                  f"{Color.MAGENTA}│{Color.RESET}", flush=True)
         
-        print(f"{Color.MAGENTA}└{'─' * 78}┘{Color.RESET}\n")
+        print(f"{Color.MAGENTA}└{'─' * 78}┘{Color.RESET}\n", flush=True)
         
         # Accuracy Graph
         if len(self.server.accuracy_history) > 1:
-            print(f"{Color.CYAN}┌{'─' * 78}┐{Color.RESET}")
-            print(f"{Color.CYAN}│ {Color.BOLD}GLOBAL MODEL ACCURACY OVER TIME{' ' * 46}│{Color.RESET}")
-            print(f"{Color.CYAN}├{'─' * 78}┤{Color.RESET}")
+            print(f"{Color.CYAN}┌{'─' * 78}┐{Color.RESET}", flush=True)
+            print(f"{Color.CYAN}│ {Color.BOLD}GLOBAL MODEL ACCURACY OVER TIME{' ' * 46}│{Color.RESET}", flush=True)
+            print(f"{Color.CYAN}├{'─' * 78}┤{Color.RESET}", flush=True)
             
             graph_lines = self.draw_accuracy_graph(self.server.accuracy_history)
             for line in graph_lines:
-                print(f"{Color.CYAN}│{Color.RESET} {line}{' ' * (76 - len(line))}{Color.CYAN}│{Color.RESET}")
+                print(f"{Color.CYAN}│{Color.RESET} {line}{' ' * (76 - len(line))}{Color.CYAN}│{Color.RESET}", flush=True)
             
-            print(f"{Color.CYAN}└{'─' * 78}┘{Color.RESET}\n")
+            print(f"{Color.CYAN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
         
         # Recent Activity Log
-        print(f"{Color.GREEN}┌{'─' * 78}┐{Color.RESET}")
-        print(f"{Color.GREEN}│ {Color.BOLD}RECENT ACTIVITY{' ' * 63}│{Color.RESET}")
-        print(f"{Color.GREEN}├{'─' * 78}┤{Color.RESET}")
+        print(f"{Color.GREEN}┌{'─' * 78}┐{Color.RESET}", flush=True)
+        print(f"{Color.GREEN}│ {Color.BOLD}RECENT ACTIVITY{' ' * 63}│{Color.RESET}", flush=True)
+        print(f"{Color.GREEN}├{'─' * 78}┤{Color.RESET}", flush=True)
         
         for msg in list(self.log_messages)[-5:]:
-            print(f"{Color.GREEN}│{Color.RESET} {msg:<76} {Color.GREEN}│{Color.RESET}")
+            print(f"{Color.GREEN}│{Color.RESET} {msg:<76} {Color.GREEN}│{Color.RESET}", flush=True)
         
-        print(f"{Color.GREEN}└{'─' * 78}┘{Color.RESET}\n")
+        print(f"{Color.GREEN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+        
+        # Force final flush
+        sys.stdout.flush()
 
 
 # ============================================================================
@@ -811,7 +818,13 @@ def run_federated_learning():
     time.sleep(2)
     
     # Create dashboard
+    print(f"📊 Initializing live dashboard...", flush=True)
     dashboard = TerminalDashboard(server, devices)
+    print(f"   {Color.GREEN}✓{Color.RESET} Dashboard ready\n", flush=True)
+    
+    # Initial dashboard render to show starting state
+    dashboard.render()
+    time.sleep(1)
     
     # Create checkpoints directory
     os.makedirs('checkpoints', exist_ok=True)
@@ -866,11 +879,17 @@ def run_federated_learning():
             start_round = 1
     
     # Training loop with robust error handling
+    print(f"\n{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
+    print(f"{Color.GREEN}{Color.BOLD}{'🚀 STARTING FEDERATED LEARNING TRAINING':^80}{Color.RESET}", flush=True)
+    print(f"{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
+    time.sleep(1)
+    
     for round_num in range(start_round, config['num_rounds'] + 1):
         try:
             server.current_round = round_num
             round_start = time.time()
             
+            # Render dashboard at start of each round
             dashboard.render()
             dashboard.log(f"Starting Round {round_num}/{config['num_rounds']}")
             time.sleep(0.5)
