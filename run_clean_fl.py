@@ -41,7 +41,7 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Non-blocking for better throughput
 
 # Increase timeout settings for stability
 import socket
-socket.setdefaulttimeout(300)  # 5 minutes for any network operations
+socket.setdefaulttimeout(600)  # 10 minutes for any network operations (increased for longer training)
 
 # Set PyTorch memory management
 if torch.cuda.is_available():
@@ -226,8 +226,8 @@ class FederatedServer:
                             total_loss += loss.item()
                             batch_count += 1
                             
-                            # More frequent cache clearing and garbage collection
-                            if batch_count % 5 == 0:  # Changed from 10 to 5
+                            # Cache clearing - optimized for GPU (GPU processing is much faster than CPU)
+                            if batch_count % 10 == 0:  # Every 10 batches (GPU handles this efficiently)
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
                                 gc.collect()  # Python garbage collection
@@ -351,11 +351,10 @@ class FederatedDevice:
                             correct += (predicted == labels).sum().item()
                             batch_count += 1
                             
-                            # More frequent cache clearing
-                            if batch_count % 5 == 0:  # Changed from 10 to 5
+                            # Cache clearing - less frequent with GPU (GPU handles memory better)
+                            if batch_count % 10 == 0:  # Every 10 batches (GPU is faster)
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
-                                    torch.cuda.synchronize()
                                 gc.collect()
                                     
                         except RuntimeError as e:
@@ -551,7 +550,7 @@ def load_malnet_data():
         'dataset': {
             'path': 'malnet-graphs-tiny',
             'max_nodes': 2000,
-            'batch_size': 16,  # Increased for better GPU utilization and training efficiency
+            'batch_size': 16,  # Increased for GPU (safe: GPU processes 4x faster than CPU, so timeout won't occur)
             'num_workers': 2,  # Enable workers for faster data loading
             'pin_memory': True  # Enable for efficient GPU transfer
         },
