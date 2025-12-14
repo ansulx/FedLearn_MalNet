@@ -355,6 +355,7 @@ class FederatedDevice:
                             if batch_count % 10 == 0:  # Every 10 batches (GPU is faster)
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
                                 gc.collect()
                                     
                         except RuntimeError as e:
