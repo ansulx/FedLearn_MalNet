@@ -137,9 +137,9 @@ class MalNetGraphLoader:
         return new_edge_index, self.max_nodes
     
     def _create_node_features(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-        """Create simple node features (optimized for speed)"""
+        """Create enhanced node features with clustering coefficient (research-grade)"""
         if num_nodes == 0:
-            return torch.zeros(1, 3, dtype=torch.float32)
+            return torch.zeros(1, 4, dtype=torch.float32)  # 4 features now
         
         # Calculate node degrees efficiently using scatter operations
         # FIXED: Explicit dtype to prevent casting errors
@@ -158,8 +158,12 @@ class MalNetGraphLoader:
             # Total degree
             degrees = in_degrees + out_degrees
         
-        # Stack features: [degree, in_degree, out_degree]
-        features = torch.stack([degrees, in_degrees, out_degrees], dim=1)
+        # RESEARCH-GRADE: Enhanced node features with clustering coefficient
+        # Calculate clustering coefficient (efficient approximation)
+        clustering = self._calculate_clustering_coefficient_fast(edge_index, num_nodes)
+        
+        # Stack features: [degree, in_degree, out_degree, clustering]
+        features = torch.stack([degrees, in_degrees, out_degrees, clustering], dim=1)
         
         # RESEARCH-GRADE: Normalize features for better learning
         # Log transform to handle skewed degree distributions
@@ -171,6 +175,40 @@ class MalNetGraphLoader:
             features = (features - feature_mean) / (feature_std + 1e-8)
         
         return features.float()
+    
+    def _calculate_clustering_coefficient_fast(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Fast clustering coefficient calculation using adjacency matrix"""
+        if num_nodes == 0 or edge_index.size(1) == 0:
+            return torch.zeros(num_nodes, dtype=torch.float32)
+        
+        # Build adjacency list (more efficient than full matrix)
+        adj_list = [set() for _ in range(num_nodes)]
+        for i in range(edge_index.size(1)):
+            src, dst = edge_index[0, i].item(), edge_index[1, i].item()
+            adj_list[src].add(dst)
+            adj_list[dst].add(src)  # Undirected
+        
+        clustering = torch.zeros(num_nodes, dtype=torch.float32)
+        
+        # Calculate clustering for each node
+        for node in range(num_nodes):
+            neighbors = list(adj_list[node])
+            degree = len(neighbors)
+            
+            if degree < 2:
+                clustering[node] = 0.0
+            else:
+                # Count triangles (edges between neighbors)
+                triangles = 0
+                for i, n1 in enumerate(neighbors):
+                    for n2 in neighbors[i+1:]:
+                        if n2 in adj_list[n1]:
+                            triangles += 1
+                
+                max_possible = degree * (degree - 1) / 2
+                clustering[node] = triangles / max_possible if max_possible > 0 else 0.0
+        
+        return clustering
     
     def _calculate_clustering_coefficient(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """Calculate local clustering coefficient for each node"""
@@ -207,7 +245,7 @@ class MalNetGraphLoader:
     def _create_empty_graph(self) -> Data:
         """Create empty graph for error cases"""
         return Data(
-            x=torch.zeros(1, 3, dtype=torch.float32),  # 3 features with explicit float type
+            x=torch.zeros(1, 4, dtype=torch.float32),  # 4 features (degree, in_degree, out_degree, clustering)
             edge_index=torch.zeros(2, 0, dtype=torch.long),  # Edge indices must be Long
             num_nodes=1
         )

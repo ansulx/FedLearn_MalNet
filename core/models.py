@@ -11,6 +11,7 @@ from torch_geometric.nn import GCNConv, GATConv, SAGEConv, global_mean_pool, glo
 from torch_geometric.nn import BatchNorm, LayerNorm
 from typing import Dict, List, Optional, Tuple
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +66,32 @@ class ResearchGNN(nn.Module):
         # Input projection (adaptive to input dimension)
         self.input_proj = nn.Linear(input_dim, hidden_dim)
         
-        # GNN layers
+        # GNN layers with residual connections and enhanced GAT
         self.gnn_layers = nn.ModuleList()
         self.norms = nn.ModuleList()
+        self.use_residual = True  # Enable residual connections for deeper networks
+        self.gat_proj = None  # For GAT multi-head projection
+        self.gnn_type = gnn_type  # Store for forward pass
         
         for i in range(num_layers):
-            # GNN layer
+            # GNN layer - Enhanced with 8 heads for GAT (research-grade)
             if gnn_type == 'gcn':
                 self.gnn_layers.append(GCNConv(hidden_dim, hidden_dim))
             elif gnn_type == 'gat':
-                self.gnn_layers.append(GATConv(hidden_dim, hidden_dim, heads=4, concat=False))
+                # Use 8 heads for better representation (research-grade)
+                num_heads = 8
+                head_dim = hidden_dim // num_heads
+                # Ensure head_dim is at least 1
+                if head_dim < 1:
+                    head_dim = 1
+                    num_heads = hidden_dim
+                self.gnn_layers.append(GATConv(hidden_dim, head_dim, heads=num_heads, concat=True, dropout=dropout))
+                # Projection to maintain hidden_dim after concat
+                if self.gat_proj is None:
+                    self.gat_proj = nn.ModuleList()
+                # Output dimension after concat is head_dim * num_heads
+                actual_output_dim = head_dim * num_heads
+                self.gat_proj.append(nn.Linear(actual_output_dim, hidden_dim))
             elif gnn_type == 'sage':
                 self.gnn_layers.append(SAGEConv(hidden_dim, hidden_dim))
             else:
@@ -88,10 +105,19 @@ class ResearchGNN(nn.Module):
             else:
                 self.norms.append(nn.Identity())
         
-        # Global pooling
-        self.pooling_dim = self._get_pooling_dim()
+        # Attention-based pooling (research-grade)
+        if pooling == 'attention':
+            self.attention_pool = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, 1)
+            )
+            self.pooling_dim = hidden_dim
+        else:
+            self.attention_pool = None
+            self.pooling_dim = self._get_pooling_dim()
         
-        # Classifier
+        # Enhanced classifier with better capacity
         self.classifier = nn.Sequential(
             nn.Linear(self.pooling_dim, hidden_dim),
             nn.ReLU() if activation == 'relu' else nn.GELU(),
@@ -116,7 +142,7 @@ class ResearchGNN(nn.Module):
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through the GNN
+        Forward pass through the GNN with residual connections
         
         Args:
             x: Node features [num_nodes, input_dim]
@@ -128,31 +154,79 @@ class ResearchGNN(nn.Module):
         """
         # Input projection
         x = self.input_proj(x)
+        x_residual = x  # Store for residual connection
         
-        # GNN layers
+        # GNN layers with residual connections
         for i, (gnn_layer, norm) in enumerate(zip(self.gnn_layers, self.norms)):
             # GNN forward
-            x = gnn_layer(x, edge_index)
+            x_new = gnn_layer(x, edge_index)
+            
+            # Handle GAT multi-head output (concat=True) - project back to hidden_dim
+            if self.gnn_type == 'gat' and self.gat_proj is not None and len(self.gat_proj) > i:
+                if x_new.shape[1] != self.hidden_dim:
+                    x_new = self.gat_proj[i](x_new)
             
             # Normalization
-            x = norm(x)
+            x_new = norm(x_new)
+            
+            # Residual connection (if dimensions match and enabled)
+            if self.use_residual and x_new.shape == x_residual.shape:
+                x_new = x_new + x_residual
             
             # Activation
             if self.activation == 'relu':
-                x = F.relu(x)
+                x_new = F.relu(x_new)
             elif self.activation == 'gelu':
-                x = F.gelu(x)
+                x_new = F.gelu(x_new)
             
             # Dropout
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            x_new = F.dropout(x_new, p=self.dropout, training=self.training)
+            
+            # Update for next iteration
+            x_residual = x_new
+            x = x_new
         
-        # Global pooling
-        x_pooled = self._global_pooling(x, batch)
+        # Global pooling (attention-based or standard)
+        if self.attention_pool is not None:
+            x_pooled = self._attention_pooling(x, batch)
+        else:
+            x_pooled = self._global_pooling(x, batch)
         
         # Classification
         output = self.classifier(x_pooled)
         
         return output
+    
+    def _attention_pooling(self, x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        """Attention-based global pooling (research-grade) - efficient implementation"""
+        # Compute attention scores
+        attn_scores = self.attention_pool(x).squeeze(-1)  # [num_nodes]
+        
+        # Get unique batch IDs
+        batch_ids = batch.unique(sorted=True)
+        num_graphs = len(batch_ids)
+        
+        # Apply softmax per graph (stable implementation)
+        x_pooled = torch.zeros(num_graphs, x.size(1), device=x.device, dtype=x.dtype)
+        
+        for i, graph_id in enumerate(batch_ids):
+            mask = (batch == graph_id)
+            if mask.sum() == 0:
+                continue
+            
+            graph_nodes = x[mask]  # Nodes in this graph
+            graph_scores = attn_scores[mask]  # Attention scores for this graph
+            
+            # Stable softmax
+            max_score = graph_scores.max()
+            exp_scores = torch.exp(graph_scores - max_score)
+            sum_exp = exp_scores.sum()
+            attn_weights = exp_scores / (sum_exp + 1e-8)
+            
+            # Weighted sum
+            x_pooled[i] = (graph_nodes * attn_weights.unsqueeze(-1)).sum(dim=0)
+        
+        return x_pooled
     
     def _global_pooling(self, x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         """Apply global pooling strategy"""
