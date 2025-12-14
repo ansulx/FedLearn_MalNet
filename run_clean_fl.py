@@ -514,7 +514,8 @@ class TerminalDashboard:
         
     def clear_screen(self):
         """Clear screen and ensure output is flushed"""
-        os.system('clear' if os.name != 'nt' else 'cls')
+        # Use ANSI escape codes for better compatibility (works in RunPod, Jupyter, etc.)
+        print('\033[2J\033[H', end='', flush=True)  # Clear screen and move cursor to top
         sys.stdout.flush()
     
     def log(self, message):
@@ -869,30 +870,44 @@ def run_federated_learning():
             server.global_accuracy = checkpoint.get('global_accuracy', 0.0)
             server.best_accuracy = checkpoint.get('best_accuracy', server.global_accuracy)
             server.best_round = checkpoint.get('best_round', checkpoint_round)
+            server.current_round = checkpoint_round  # Set current round for display
             if 'best_model_state' in checkpoint:
                 server.best_model_state = checkpoint['best_model_state']
+            server.val_accuracy_history = deque(checkpoint.get('val_accuracy_history', []), maxlen=20)
+            server.patience_counter = checkpoint.get('patience_counter', 0)
+            
             dashboard.log(f"Resumed from checkpoint at round {checkpoint_round}")
-            print(f"\n{Color.YELLOW}📁 Resuming from round {checkpoint_round} (Accuracy: {server.global_accuracy:.2f}%, Best: {server.best_accuracy:.2f}%){Color.RESET}\n")
+            print(f"\n{Color.YELLOW}📁 Resuming from round {checkpoint_round} (Accuracy: {server.global_accuracy:.2f}%, Best: {server.best_accuracy:.2f}%){Color.RESET}\n", flush=True)
+            
+            # CRITICAL: Render dashboard immediately after checkpoint resume
+            dashboard.render()
             time.sleep(2)
         except Exception as e:
             print(f"\n{Color.YELLOW}⚠️  Could not load checkpoint: {e}{Color.RESET}\n")
             start_round = 1
     
     # Training loop with robust error handling
-    print(f"\n{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
-    print(f"{Color.GREEN}{Color.BOLD}{'🚀 STARTING FEDERATED LEARNING TRAINING':^80}{Color.RESET}", flush=True)
-    print(f"{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
-    time.sleep(1)
+    # Only show start message if starting from round 1
+    if start_round == 1:
+        print(f"\n{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
+        print(f"{Color.GREEN}{Color.BOLD}{'🚀 STARTING FEDERATED LEARNING TRAINING':^80}{Color.RESET}", flush=True)
+        print(f"{Color.GREEN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
+        time.sleep(1)
+    
+    # CRITICAL: Render dashboard before training loop starts
+    dashboard.render()
+    time.sleep(0.5)
     
     for round_num in range(start_round, config['num_rounds'] + 1):
         try:
             server.current_round = round_num
             round_start = time.time()
             
-            # Render dashboard at start of each round
+            # Render dashboard at start of each round (CRITICAL for visibility)
             dashboard.render()
             dashboard.log(f"Starting Round {round_num}/{config['num_rounds']}")
-            time.sleep(0.5)
+            sys.stdout.flush()  # Force flush after log
+            time.sleep(0.3)  # Small delay to ensure dashboard is visible
             
             # Get global weights
             global_weights = server.model.state_dict()
@@ -901,8 +916,10 @@ def run_federated_learning():
             device_updates = []
             for device in devices:
                 try:
+                    # Render dashboard BEFORE training starts
                     dashboard.render()
                     dashboard.log(f"Device {device.device_id} [{device.device_name}] training...")
+                    sys.stdout.flush()
                     
                     update = device.train_local(global_weights, config['local_epochs'])
                     
@@ -914,8 +931,10 @@ def run_federated_learning():
                         dashboard.log(f"Device {device.device_id} failed, skipping...")
                         device.status = "ERROR"
                     
+                    # Render dashboard AFTER training completes
                     dashboard.render()
-                    time.sleep(0.3)
+                    sys.stdout.flush()
+                    time.sleep(0.2)  # Small delay for visibility
                     
                 except Exception as e:
                     dashboard.log(f"Device {device.device_id} error: {str(e)[:50]}")
@@ -932,6 +951,8 @@ def run_federated_learning():
                     try:
                         server.aggregate_updates(device_updates)
                         dashboard.log("✓ Aggregation successful")
+                        dashboard.render()  # Render after aggregation
+                        sys.stdout.flush()
                     except Exception as agg_error:
                         import traceback
                         error_trace = traceback.format_exc()
@@ -966,6 +987,7 @@ def run_federated_learning():
                     # RESEARCH-GRADE: Evaluate global model on shared test set
                     dashboard.log("Evaluating global model on test set...")
                     dashboard.render()
+                    sys.stdout.flush()
                     results = server.evaluate(test_loader)
                     dashboard.log(f"✓ Global test accuracy: {results['accuracy']:.1f}%")
                     
@@ -1021,6 +1043,10 @@ def run_federated_learning():
                         server.best_round = round_num
                         server.best_model_state = {k: v.cpu().clone() for k, v in server.model.state_dict().items()}
                         dashboard.log(f"★ New best model: {results['accuracy']:.2f}% (Round {round_num})")
+                    
+                    # CRITICAL: Render dashboard after all evaluations
+                    dashboard.render()
+                    sys.stdout.flush()
                 except Exception as e:
                     import traceback
                     print(f"\n{'='*80}")
@@ -1035,6 +1061,9 @@ def run_federated_learning():
                 server.round_times.append(round_time)
                 
                 dashboard.log(f"Round {round_num} complete: Accuracy={results['accuracy']:.2f}%, Loss={results['loss']:.4f}")
+                # Final render at end of round
+                dashboard.render()
+                sys.stdout.flush()
                 
                 # Save checkpoint every 5 rounds or on last round (with best model)
                 if round_num % 5 == 0 or round_num == config['num_rounds']:
