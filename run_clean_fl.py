@@ -33,11 +33,11 @@ from core.models import ResearchGNN
 warnings.filterwarnings('ignore')
 
 # Set timeouts and error handling - RESEARCH-GRADE STABILITY
-torch.backends.cudnn.benchmark = False  # Disable for stability
-torch.backends.cudnn.deterministic = True  # Deterministic training
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
-os.environ['OMP_NUM_THREADS'] = '1'  # Prevent threading issues
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Better error messages
+torch.backends.cudnn.benchmark = True  # Enable for better GPU performance
+torch.backends.cudnn.deterministic = False  # Allow non-deterministic for speed
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'  # Larger chunks for RTX 5090
+os.environ['OMP_NUM_THREADS'] = '4'  # Allow more threads for data loading
+os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Non-blocking for better throughput
 
 # Increase timeout settings for stability
 import socket
@@ -196,7 +196,7 @@ class FederatedServer:
                                 continue
                             
                             # FIXED: Proper PyG Data object handling with type safety
-                            batch = batch_data.to(self.device)
+                            batch = batch_data.to(self.device, non_blocking=True)  # Non-blocking for GPU
                             labels = batch.y.long()  # Ensure labels are Long type
                             
                             # Ensure batch features have correct type
@@ -308,9 +308,13 @@ class FederatedDevice:
                 self.model.load_state_dict(global_weights)
                 self.model.train()
                 
-                optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+                # Optimizer with better settings for convergence
+                optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001, weight_decay=1e-4, betas=(0.9, 0.999))
+                # Learning rate scheduler for better convergence
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-5)
                 
                 for epoch in range(num_epochs):
+                    scheduler.step()  # Update LR at start of each epoch
                     epoch_loss = 0.0
                     correct = 0
                     total = 0
@@ -319,7 +323,7 @@ class FederatedDevice:
                     for batch_data in self.local_data:
                         try:
                             # FIXED: Proper PyG Data object handling with type safety
-                            batch = batch_data.to(self.device)
+                            batch = batch_data.to(self.device, non_blocking=True)  # Non-blocking transfer for GPU
                             labels = batch.y.long()  # Ensure labels are Long type
                             
                             # Ensure batch components have correct types
@@ -547,9 +551,9 @@ def load_malnet_data():
         'dataset': {
             'path': 'malnet-graphs-tiny',
             'max_nodes': 2000,
-            'batch_size': 4,  # Optimized for stability
-            'num_workers': 0,  # 0 workers to prevent timeout/connection issues
-            'pin_memory': False  # Disabled to prevent CUDA issues
+            'batch_size': 16,  # Increased for better GPU utilization and training efficiency
+            'num_workers': 2,  # Enable workers for faster data loading
+            'pin_memory': True  # Enable for efficient GPU transfer
         },
         'model': {'num_classes': 5}
     }
@@ -579,13 +583,13 @@ def split_data_for_devices(train_loader, num_devices=5):
             end_idx = total_samples
         
         device_data = [dataset[j] for j in range(start_idx, end_idx)]
-        # Further reduced batch size from 8 to 4 for stability
+        # Optimized batch size for GPU utilization
         device_loader = PyGDataLoader(
             device_data, 
-            batch_size=4,  # Reduced from 8 to 4
+            batch_size=16,  # Increased for better GPU utilization
             shuffle=True, 
-            num_workers=0,
-            pin_memory=False  # Disable pin_memory to prevent CUDA issues
+            num_workers=2,  # Enable workers for faster loading
+            pin_memory=True  # Enable for efficient GPU transfer
         )
         device_datasets.append(device_loader)
         
@@ -605,13 +609,17 @@ def run_federated_learning():
     config = {
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'num_devices': 5,
-        'num_rounds': 20,
-        'local_epochs': 3
+        'num_rounds': 50,  # Increased for better convergence
+        'local_epochs': 10  # Increased for better local training
     }
     
     print(f"⚙️  Device: {Color.GREEN}{config['device'].upper()}{Color.RESET}")
+    if config['device'] == 'cuda' and torch.cuda.is_available():
+        print(f"   GPU: {Color.CYAN}{torch.cuda.get_device_name(0)}{Color.RESET}")
+        print(f"   GPU Memory: {Color.CYAN}{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB{Color.RESET}")
     print(f"📱 Devices: {Color.GREEN}{config['num_devices']}{Color.RESET}")
     print(f"🔄 Rounds: {Color.GREEN}{config['num_rounds']}{Color.RESET}")
+    print(f"📚 Local Epochs: {Color.GREEN}{config['local_epochs']}{Color.RESET}")
     print(f"📊 Loading MalNet dataset...")
     
     # Load data
@@ -632,15 +640,22 @@ def run_federated_learning():
     global_model = ResearchGNN(
         input_dim=input_dim,
         num_classes=5,
-        hidden_dim=128,  # Larger for research
-        num_layers=4,
+        hidden_dim=256,  # Increased for better capacity (90-95% target)
+        num_layers=5,  # Deeper network for better representation
         gnn_type='gat',  # GAT performs better than GCN
-        dropout=0.3,
+        dropout=0.2,  # Slightly reduced for better learning
         normalization='batch',
         pooling='mean_max'
     )
     num_params = sum(p.numel() for p in global_model.parameters())
-    print(f"   {Color.GREEN}✓{Color.RESET} Research GNN created (GAT, 4 layers, 128-dim): {num_params:,} parameters\n")
+    print(f"   {Color.GREEN}✓{Color.RESET} Research GNN created (GAT, 5 layers, 256-dim): {num_params:,} parameters")
+    # Ensure model is on GPU
+    if config['device'] == 'cuda' and torch.cuda.is_available():
+        global_model = global_model.to('cuda')
+        torch.cuda.empty_cache()  # Clear cache
+        print(f"   {Color.GREEN}✓{Color.RESET} Model moved to GPU\n")
+    else:
+        print()
     
     # Create server
     print(f"🖥️  Starting FL server...")
@@ -661,10 +676,10 @@ def run_federated_learning():
             model=ResearchGNN(
                 input_dim=input_dim,
                 num_classes=5,
-                hidden_dim=128,
-                num_layers=4,
+                hidden_dim=256,  # Match global model
+                num_layers=5,  # Match global model
                 gnn_type='gat',
-                dropout=0.3,
+                dropout=0.2,  # Match global model
                 normalization='batch',
                 pooling='mean_max'
             ).to(config['device']),
