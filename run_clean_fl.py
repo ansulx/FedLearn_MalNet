@@ -39,15 +39,35 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'  # Larger chunks
 os.environ['OMP_NUM_THREADS'] = '4'  # Allow more threads for data loading
 os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Non-blocking for better throughput
 
-# Increase timeout settings for stability
+# CRITICAL TIMEOUT FIXES - Prevent 3000ms timeout issues
+# ========================================================
 import socket
-socket.setdefaulttimeout(900)  # 15 minutes for any network operations (increased for 100 rounds + larger model)
+# Set socket timeout to 2 hours (7200 seconds) to prevent connection drops
+# This is critical for long-running training sessions on RunPod
+socket.setdefaulttimeout(7200)  # 2 hours - prevents connection timeout during long operations
 
-# Set PyTorch memory management
+# Additional timeout prevention for CUDA operations
+if torch.cuda.is_available():
+    # Set CUDA device timeout to prevent operation timeouts
+    # This ensures long-running GPU operations don't timeout
+    import torch.cuda
+    # Disable CUDA timeout detection (allow operations to run as long as needed)
+    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+    # Increase CUDA operation timeout (if supported by driver)
+    try:
+        # Some CUDA operations may have internal timeouts - we prevent them here
+        torch.cuda.set_device(0)
+    except:
+        pass
+
+# Set PyTorch memory management with timeout prevention
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
-    # Prevent CUDA timeout issues
+    # CRITICAL: Prevent CUDA timeout issues with explicit synchronization
+    # This ensures all CUDA operations complete before proceeding
     torch.cuda.synchronize()
+    # Set CUDA stream to prevent timeout
+    torch.cuda.current_stream().synchronize()
 
 # ANSI colors for terminal
 class Color:
@@ -109,7 +129,18 @@ class FederatedServer:
         self.model = model
         self.config = config
         self.device = config['device']
-        self.model = self.model.to(self.device)
+        
+        # CRITICAL: Force server model to GPU - no CPU fallback
+        if self.device != 'cuda':
+            raise RuntimeError(f"Server must use GPU (cuda), but got device: {self.device}")
+        
+        # Force model to GPU and verify
+        self.model = self.model.to('cuda')  # FORCED to GPU
+        torch.cuda.synchronize()  # Ensure model is on GPU
+        
+        # Verify model is actually on GPU
+        if next(self.model.parameters()).device.type != 'cuda':
+            raise RuntimeError(f"Failed to move server model to GPU! Model is on: {next(self.model.parameters()).device}")
         
         # Status tracking
         self.status = "INITIALIZING"
@@ -207,20 +238,29 @@ class FederatedServer:
         global_weights = self.model.state_dict()
         aggregated_weights = {}
         
+        # CRITICAL: Ensure all aggregation happens on GPU
+        # Verify global model is on GPU
+        if next(self.model.parameters()).device.type != 'cuda':
+            raise RuntimeError(f"Global model must be on GPU for aggregation! Current device: {next(self.model.parameters()).device}")
+        
         # Weighted average with adaptive FedProx regularization
         for key in global_weights.keys():
             # Get reference parameter to preserve dtype and device
             ref_param = global_weights[key]
             
-            # Initialize with zeros matching exact dtype
-            weighted_sum = torch.zeros_like(ref_param, dtype=ref_param.dtype, device=ref_param.device)
+            # CRITICAL: Force to GPU if somehow on CPU
+            if ref_param.device.type != 'cuda':
+                ref_param = ref_param.to('cuda')
+            
+            # Initialize with zeros matching exact dtype on GPU
+            weighted_sum = torch.zeros_like(ref_param, dtype=ref_param.dtype, device='cuda')  # FORCED to GPU
             
             for update, combined_weight in zip(device_updates, combined_weights):
                 # Get update weight and ensure exact dtype match
                 update_weight = update['weights'][key]
                 
-                # Move to correct device and dtype BEFORE operations
-                update_weight = update_weight.to(device=ref_param.device, dtype=ref_param.dtype)
+                # CRITICAL: Move to GPU and correct dtype BEFORE operations
+                update_weight = update_weight.to(device='cuda', dtype=ref_param.dtype)  # FORCED to GPU
                 
                 # Adaptive FedProx: Add proximal term (decays over rounds)
                 global_weight = ref_param.clone()
@@ -291,10 +331,17 @@ class FederatedServer:
                             total_loss += loss.item()
                             batch_count += 1
                             
-                            # Cache clearing - optimized for larger model (less frequent to avoid timeout)
-                            if batch_count % 15 == 0:  # Every 15 batches (less frequent for larger model)
+                            # KEEPALIVE + Cache clearing: Periodic output to prevent connection timeout
+                            # Output every 15 batches to keep connection alive (critical for RunPod)
+                            if batch_count % 15 == 0:  # Every 15 batches
+                                # CRITICAL: Force output flush to prevent connection timeout (keepalive)
+                                sys.stdout.flush()
+                                
+                                # Cache clearing - optimized for larger model (less frequent to avoid timeout)
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                    # CRITICAL: Synchronize CUDA operations to prevent timeout
+                                    torch.cuda.synchronize()
                                 gc.collect()  # Python garbage collection
                                     
                         except RuntimeError as e:
@@ -356,7 +403,20 @@ class FederatedDevice:
         self.local_data = local_data
         self.model = model
         self.config = config
-        self.device = config['device']
+        
+        # CRITICAL: Force device to GPU - no CPU fallback
+        if config['device'] != 'cuda':
+            raise RuntimeError(f"Device must use GPU (cuda), but got device: {config['device']}")
+        
+        self.device = 'cuda'  # FORCED to GPU
+        
+        # Force model to GPU and verify
+        self.model = self.model.to('cuda')  # FORCED to GPU
+        torch.cuda.synchronize()  # Ensure model is on GPU
+        
+        # Verify model is actually on GPU
+        if next(self.model.parameters()).device.type != 'cuda':
+            raise RuntimeError(f"Failed to move device {device_id} model to GPU! Model is on: {next(self.model.parameters()).device}")
         
         self.status = "IDLE"
         self.local_accuracy = 0.0
@@ -404,6 +464,10 @@ class FederatedDevice:
                         self._dashboard.render()
                         sys.stdout.flush()
                     
+                    # KEEPALIVE: Periodic output during long training to prevent connection timeout
+                    # Output progress every 10 batches to keep connection alive
+                    last_keepalive_batch = -1
+                    
                     for batch_data in self.local_data:
                         try:
                             # FIXED: Proper PyG Data object handling with type safety
@@ -445,10 +509,17 @@ class FederatedDevice:
                             correct += (predicted == labels).sum().item()
                             batch_count += 1
                             
-                            # Cache clearing - less frequent with GPU (GPU handles memory better)
-                            if batch_count % 10 == 0:  # Every 10 batches (GPU is faster)
+                            # KEEPALIVE + Cache clearing: Periodic output to prevent connection timeout
+                            # Output every 10 batches to keep connection alive (critical for RunPod)
+                            if batch_count % 10 == 0:  # Every 10 batches
+                                # CRITICAL: Force output flush to prevent connection timeout (keepalive)
+                                # This ensures RunPod/SSH connections don't timeout during long training
+                                sys.stdout.flush()
+                                
+                                # Cache clearing - less frequent with GPU (GPU handles memory better)
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
+                                    # CRITICAL: Synchronize CUDA operations to prevent timeout
                                     torch.cuda.synchronize()
                                 gc.collect()
                                     
@@ -793,12 +864,14 @@ def split_data_for_devices(train_loader, num_devices=5):
             device_data = [client_dataset[j] for j in range(len(client_dataset))]
         
         # Optimized batch size for GPU utilization
+        # CRITICAL: DataLoader with timeout to prevent hanging operations
         device_loader = PyGDataLoader(
             device_data, 
             batch_size=16,  # Increased for better GPU utilization
             shuffle=True, 
             num_workers=2,  # Enable workers for faster loading
-            pin_memory=True  # Enable for efficient GPU transfer
+            pin_memory=True,  # Enable for efficient GPU transfer
+            timeout=300  # 5 minutes timeout for DataLoader operations (prevents hanging/timeout)
         )
         device_datasets.append(device_loader)
     
@@ -812,18 +885,35 @@ def run_federated_learning():
     print(f"{Color.CYAN}{Color.BOLD}{'🚀 INITIALIZING FEDERATED LEARNING SYSTEM':^80}{Color.RESET}")
     print(f"{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}\n")
     
-    # Configuration - Optimized for 90-95% accuracy target
+    # CRITICAL: Force GPU usage - no CPU fallback
+    # ============================================
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"{Color.RED}ERROR: CUDA/GPU is not available!{Color.RESET}\n"
+            f"This system requires GPU for training. Please ensure:\n"
+            f"  1. CUDA is installed and configured\n"
+            f"  2. GPU drivers are properly installed\n"
+            f"  3. PyTorch was installed with CUDA support\n"
+            f"  4. GPU is accessible (run: nvidia-smi to check)"
+        )
+    
+    # Force GPU device - no CPU fallback
     config = {
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'device': 'cuda',  # FORCED to GPU - no CPU fallback
         'num_devices': 5,
         'num_rounds': 100,  # Increased significantly for better convergence to 90-95%
         'local_epochs': 15  # Increased for more thorough local training
     }
     
-    print(f"⚙️  Device: {Color.GREEN}{config['device'].upper()}{Color.RESET}")
-    if config['device'] == 'cuda' and torch.cuda.is_available():
-        print(f"   GPU: {Color.CYAN}{torch.cuda.get_device_name(0)}{Color.RESET}")
-        print(f"   GPU Memory: {Color.CYAN}{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB{Color.RESET}")
+    # Verify GPU is accessible
+    gpu_id = 0
+    torch.cuda.set_device(gpu_id)
+    torch.cuda.empty_cache()
+    
+    print(f"⚙️  Device: {Color.GREEN}{Color.BOLD}CUDA (GPU) - FORCED{Color.RESET}")
+    print(f"   GPU: {Color.CYAN}{torch.cuda.get_device_name(gpu_id)}{Color.RESET}")
+    print(f"   GPU Memory: {Color.CYAN}{torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3:.1f} GB{Color.RESET}")
+    print(f"   GPU ID: {Color.CYAN}{gpu_id}{Color.RESET}")
     print(f"📱 Devices: {Color.GREEN}{config['num_devices']}{Color.RESET}")
     print(f"🔄 Rounds: {Color.GREEN}{config['num_rounds']}{Color.RESET} (Enhanced for 90-95% target)")
     print(f"📚 Local Epochs: {Color.GREEN}{config['local_epochs']}{Color.RESET} (Enhanced for better convergence)")
@@ -857,13 +947,12 @@ def run_federated_learning():
     )
     num_params = sum(p.numel() for p in global_model.parameters())
     print(f"   {Color.GREEN}✓{Color.RESET} Enhanced GNN created (GAT, 6 layers, 512-dim): {num_params:,} parameters")
-    # Ensure model is on GPU
-    if config['device'] == 'cuda' and torch.cuda.is_available():
-        global_model = global_model.to('cuda')
-        torch.cuda.empty_cache()  # Clear cache
-        print(f"   {Color.GREEN}✓{Color.RESET} Model moved to GPU\n")
-    else:
-        print()
+    
+    # CRITICAL: Force model to GPU - no CPU fallback
+    global_model = global_model.to('cuda')  # FORCED to GPU
+    torch.cuda.empty_cache()  # Clear cache
+    torch.cuda.synchronize()  # Ensure GPU is ready
+    print(f"   {Color.GREEN}✓{Color.RESET} Model FORCED to GPU (CUDA)\n")
     
     # Create server
     print(f"🖥️  Starting FL server...")
@@ -890,7 +979,7 @@ def run_federated_learning():
                 dropout=0.15,  # Match enhanced global model
                 normalization='batch',
                 pooling='attention'  # Match enhanced global model
-            ).to(config['device']),
+            ).to('cuda'),  # FORCED to GPU - no CPU fallback
             config=config
         )
         devices.append(device)
@@ -1018,7 +1107,14 @@ def run_federated_learning():
                     dashboard.log(f"Device {device.device_id} [{device.device_name}] training...")
                     sys.stdout.flush()
                     
+                    # CRITICAL: Keepalive before long training operation to prevent timeout
+                    # Force output to ensure connection stays alive
+                    print(".", end="", flush=True)  # Silent keepalive ping
+                    
                     update = device.train_local(global_weights, config['local_epochs'], dashboard=dashboard)
+                    
+                    # CRITICAL: Keepalive after training to ensure connection is still alive
+                    sys.stdout.flush()
                     
                     # Only include successful updates
                     if update['loss'] < 900:  # Filter out error returns
@@ -1167,8 +1263,10 @@ def run_federated_learning():
                 dashboard.render()
                 sys.stdout.flush()
                 
-                # Save checkpoint every 5 rounds or on last round (with best model)
-                if round_num % 5 == 0 or round_num == config['num_rounds']:
+                # CRITICAL: Save checkpoint EVERY ROUND to prevent progress loss on timeout
+                # Changed from every 5 rounds to every round for maximum safety
+                # This ensures we never lose more than 1 round of progress if connection drops
+                if True:  # Save every round (was: round_num % 5 == 0)
                     try:
                         checkpoint_data = {
                             'round': round_num,

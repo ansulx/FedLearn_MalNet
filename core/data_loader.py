@@ -260,13 +260,16 @@ class MalNetGraphLoader:
         # Create data loaders
         persistent_workers = self.num_workers > 0  # Only enable if workers are used
         
+        # CRITICAL: Add timeout to prevent hanging operations (prevents 3000ms timeout issues)
+        # Timeout of 300 seconds (5 minutes) ensures DataLoader operations don't hang
         train_loader = PyGDataLoader(
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=persistent_workers
+            persistent_workers=persistent_workers,
+            timeout=300  # 5 minutes timeout to prevent hanging
         )
         
         val_loader = PyGDataLoader(
@@ -275,7 +278,8 @@ class MalNetGraphLoader:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=persistent_workers
+            persistent_workers=persistent_workers,
+            timeout=300  # 5 minutes timeout to prevent hanging
         )
         
         test_loader = PyGDataLoader(
@@ -284,7 +288,8 @@ class MalNetGraphLoader:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=persistent_workers
+            persistent_workers=persistent_workers,
+            timeout=300  # 5 minutes timeout to prevent hanging
         )
         
         return train_loader, val_loader, test_loader
