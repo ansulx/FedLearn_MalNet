@@ -363,9 +363,10 @@ class FederatedDevice:
         self.local_loss = 0.0
         self.num_samples = len(local_data.dataset)
     
-    def train_local(self, global_weights, num_epochs, max_retries=3):
+    def train_local(self, global_weights, num_epochs, max_retries=3, dashboard=None):
         """Train on local data with error handling and retry logic"""
         self.status = "TRAINING"
+        self._dashboard = dashboard  # Store dashboard reference for periodic updates
         
         for attempt in range(max_retries):
             try:
@@ -396,6 +397,12 @@ class FederatedDevice:
                     correct = 0
                     total = 0
                     batch_count = 0
+                    
+                    # CRITICAL: Render dashboard periodically during training (every 5 epochs)
+                    # This ensures dashboard is visible even during long training blocks
+                    if self._dashboard is not None and epoch % 5 == 0 and epoch > 0:
+                        self._dashboard.render()
+                        sys.stdout.flush()
                     
                     for batch_data in self.local_data:
                         try:
@@ -504,7 +511,7 @@ class FederatedDevice:
 # ============================================================================
 
 class TerminalDashboard:
-    """Real-time terminal dashboard"""
+    """Real-time terminal dashboard with RunPod compatibility"""
     
     def __init__(self, server, devices):
         self.server = server
@@ -512,10 +519,42 @@ class TerminalDashboard:
         self.start_time = time.time()
         self.log_messages = deque(maxlen=10)
         
+        # Detect terminal capabilities for RunPod compatibility
+        self.is_interactive = sys.stdout.isatty()
+        self.supports_ansi = self._check_ansi_support()
+        self.use_clear = self.is_interactive and self.supports_ansi
+        
+        # For RunPod/non-interactive: use line-based updates instead of clearing
+        if not self.use_clear:
+            print("\n" * 2, flush=True)  # Add spacing for readability
+            print("=" * 80, flush=True)
+            print("DASHBOARD MODE: Line-based updates (RunPod/Non-interactive terminal)", flush=True)
+            print("=" * 80, flush=True)
+            print("\n", flush=True)
+    
+    def _check_ansi_support(self):
+        """Check if terminal supports ANSI escape codes"""
+        try:
+            # Check environment variables
+            term = os.environ.get('TERM', '')
+            if 'xterm' in term or 'color' in term or 'ansi' in term:
+                return True
+            # Check if we're in a known non-ANSI environment
+            if os.environ.get('RUNPOD_POD_ID') or os.environ.get('RUNPOD'):
+                return False  # RunPod might not support ANSI properly
+            # Default: assume support if interactive
+            return self.is_interactive
+        except:
+            return False
+    
     def clear_screen(self):
-        """Clear screen and ensure output is flushed"""
-        # Use ANSI escape codes for better compatibility (works in RunPod, Jupyter, etc.)
-        print('\033[2J\033[H', end='', flush=True)  # Clear screen and move cursor to top
+        """Clear screen with fallback for RunPod/non-interactive terminals"""
+        if self.use_clear:
+            # Use ANSI escape codes for interactive terminals
+            print('\033[2J\033[H', end='', flush=True)
+        else:
+            # For RunPod/non-interactive: print separator lines instead
+            print("\n" + "=" * 80 + "\n", flush=True)
         sys.stdout.flush()
     
     def log(self, message):
@@ -560,13 +599,19 @@ class TerminalDashboard:
         return lines
     
     def render(self):
-        """Render full dashboard with forced output flushing"""
+        """Render full dashboard with forced output flushing and RunPod compatibility"""
         self.clear_screen()
         
-        # Header
-        print(f"\n{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
-        print(f"{Color.CYAN}{Color.BOLD}{'🖥️  FEDERATED LEARNING SERVER - LIVE DASHBOARD':^80}{Color.RESET}", flush=True)
-        print(f"{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
+        # Header - use colors only if supported
+        if self.supports_ansi:
+            print(f"\n{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}", flush=True)
+            print(f"{Color.CYAN}{Color.BOLD}{'🖥️  FEDERATED LEARNING SERVER - LIVE DASHBOARD':^80}{Color.RESET}", flush=True)
+            print(f"{Color.CYAN}{Color.BOLD}{'═' * 80}{Color.RESET}\n", flush=True)
+        else:
+            # Plain text for RunPod
+            print(f"\n{'=' * 80}", flush=True)
+            print(f"{'FEDERATED LEARNING SERVER - LIVE DASHBOARD':^80}", flush=True)
+            print(f"{'=' * 80}\n", flush=True)
         
         # Server Status Box
         runtime = time.time() - self.start_time
@@ -588,47 +633,84 @@ class TerminalDashboard:
         print(f"{Color.BLUE}└{'─' * 78}┘{Color.RESET}\n", flush=True)
         
         # Connected Devices Box
-        print(f"{Color.MAGENTA}┌{'─' * 78}┐{Color.RESET}", flush=True)
-        print(f"{Color.MAGENTA}│ {Color.BOLD}CONNECTED DEVICES (Real-Time Status){' ' * 42}│{Color.RESET}", flush=True)
-        print(f"{Color.MAGENTA}├{'─' * 78}┤{Color.RESET}", flush=True)
-        
-        for device in self.devices:
-            status_symbol = {
-                'TRAINING': f'{Color.YELLOW}●',
-                'COMPLETED': f'{Color.GREEN}✓',
-                'IDLE': f'{Color.BLUE}○',
-                'CONNECTED': f'{Color.CYAN}○'
-            }.get(device.status, f'{Color.WHITE}○')
+        if self.supports_ansi:
+            print(f"{Color.MAGENTA}┌{'─' * 78}┐{Color.RESET}", flush=True)
+            print(f"{Color.MAGENTA}│ {Color.BOLD}CONNECTED DEVICES (Real-Time Status){' ' * 42}│{Color.RESET}", flush=True)
+            print(f"{Color.MAGENTA}├{'─' * 78}┤{Color.RESET}", flush=True)
             
-            print(f"{Color.MAGENTA}│{Color.RESET} Device {device.device_id} [{device.device_name:<12}] "
-                  f"{status_symbol} {device.status:<10}{Color.RESET} "
-                  f"Acc: {device.local_accuracy:5.1f}%  "
-                  f"Samples: {device.num_samples:>5} "
-                  f"{Color.MAGENTA}│{Color.RESET}", flush=True)
-        
-        print(f"{Color.MAGENTA}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+            for device in self.devices:
+                status_symbol = {
+                    'TRAINING': f'{Color.YELLOW}●',
+                    'COMPLETED': f'{Color.GREEN}✓',
+                    'IDLE': f'{Color.BLUE}○',
+                    'CONNECTED': f'{Color.CYAN}○'
+                }.get(device.status, f'{Color.WHITE}○')
+                
+                print(f"{Color.MAGENTA}│{Color.RESET} Device {device.device_id} [{device.device_name:<12}] "
+                      f"{status_symbol} {device.status:<10}{Color.RESET} "
+                      f"Acc: {device.local_accuracy:5.1f}%  "
+                      f"Samples: {device.num_samples:>5} "
+                      f"{Color.MAGENTA}│{Color.RESET}", flush=True)
+            
+            print(f"{Color.MAGENTA}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+        else:
+            # Plain text for RunPod
+            print(f"{'=' * 80}", flush=True)
+            print(f"CONNECTED DEVICES (Real-Time Status)", flush=True)
+            print(f"{'=' * 80}", flush=True)
+            for device in self.devices:
+                status_symbol = {
+                    'TRAINING': '[T]',
+                    'COMPLETED': '[✓]',
+                    'IDLE': '[○]',
+                    'CONNECTED': '[○]'
+                }.get(device.status, '[?]')
+                print(f"Device {device.device_id} [{device.device_name:<12}] "
+                      f"{status_symbol} {device.status:<10} "
+                      f"Acc: {device.local_accuracy:5.1f}%  "
+                      f"Samples: {device.num_samples:>5}", flush=True)
+            print(f"{'=' * 80}\n", flush=True)
         
         # Accuracy Graph
         if len(self.server.accuracy_history) > 1:
-            print(f"{Color.CYAN}┌{'─' * 78}┐{Color.RESET}", flush=True)
-            print(f"{Color.CYAN}│ {Color.BOLD}GLOBAL MODEL ACCURACY OVER TIME{' ' * 46}│{Color.RESET}", flush=True)
-            print(f"{Color.CYAN}├{'─' * 78}┤{Color.RESET}", flush=True)
-            
-            graph_lines = self.draw_accuracy_graph(self.server.accuracy_history)
-            for line in graph_lines:
-                print(f"{Color.CYAN}│{Color.RESET} {line}{' ' * (76 - len(line))}{Color.CYAN}│{Color.RESET}", flush=True)
-            
-            print(f"{Color.CYAN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+            if self.supports_ansi:
+                print(f"{Color.CYAN}┌{'─' * 78}┐{Color.RESET}", flush=True)
+                print(f"{Color.CYAN}│ {Color.BOLD}GLOBAL MODEL ACCURACY OVER TIME{' ' * 46}│{Color.RESET}", flush=True)
+                print(f"{Color.CYAN}├{'─' * 78}┤{Color.RESET}", flush=True)
+                
+                graph_lines = self.draw_accuracy_graph(self.server.accuracy_history)
+                for line in graph_lines:
+                    print(f"{Color.CYAN}│{Color.RESET} {line}{' ' * (76 - len(line))}{Color.CYAN}│{Color.RESET}", flush=True)
+                
+                print(f"{Color.CYAN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+            else:
+                # Plain text for RunPod
+                print(f"{'=' * 80}", flush=True)
+                print(f"GLOBAL MODEL ACCURACY OVER TIME", flush=True)
+                print(f"{'=' * 80}", flush=True)
+                values = list(self.server.accuracy_history)
+                print(f"Recent accuracies: {', '.join([f'{v:.1f}%' for v in values[-10:]])}", flush=True)
+                print(f"Current: {values[-1]:.2f}% | Best: {max(values):.2f}% | Trend: {'↑' if len(values) > 1 and values[-1] > values[-2] else '↓'}", flush=True)
+                print(f"{'=' * 80}\n", flush=True)
         
         # Recent Activity Log
-        print(f"{Color.GREEN}┌{'─' * 78}┐{Color.RESET}", flush=True)
-        print(f"{Color.GREEN}│ {Color.BOLD}RECENT ACTIVITY{' ' * 63}│{Color.RESET}", flush=True)
-        print(f"{Color.GREEN}├{'─' * 78}┤{Color.RESET}", flush=True)
-        
-        for msg in list(self.log_messages)[-5:]:
-            print(f"{Color.GREEN}│{Color.RESET} {msg:<76} {Color.GREEN}│{Color.RESET}", flush=True)
-        
-        print(f"{Color.GREEN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+        if self.supports_ansi:
+            print(f"{Color.GREEN}┌{'─' * 78}┐{Color.RESET}", flush=True)
+            print(f"{Color.GREEN}│ {Color.BOLD}RECENT ACTIVITY{' ' * 63}│{Color.RESET}", flush=True)
+            print(f"{Color.GREEN}├{'─' * 78}┤{Color.RESET}", flush=True)
+            
+            for msg in list(self.log_messages)[-5:]:
+                print(f"{Color.GREEN}│{Color.RESET} {msg:<76} {Color.GREEN}│{Color.RESET}", flush=True)
+            
+            print(f"{Color.GREEN}└{'─' * 78}┘{Color.RESET}\n", flush=True)
+        else:
+            # Plain text for RunPod
+            print(f"{'=' * 80}", flush=True)
+            print(f"RECENT ACTIVITY", flush=True)
+            print(f"{'=' * 80}", flush=True)
+            for msg in list(self.log_messages)[-5:]:
+                print(f"  {msg}", flush=True)
+            print(f"{'=' * 80}\n", flush=True)
         
         # Force final flush
         sys.stdout.flush()
@@ -824,15 +906,27 @@ def run_federated_learning():
     print(f"   {Color.GREEN}✓{Color.RESET} Dashboard ready\n", flush=True)
     
     # Initial dashboard render to show starting state
+    print("\n" * 3, flush=True)  # Add spacing to ensure dashboard is visible
     dashboard.render()
-    time.sleep(1)
+    sys.stdout.flush()
+    time.sleep(2)  # Give time for dashboard to be visible before checkpoint check
     
     # Create checkpoints directory
     os.makedirs('checkpoints', exist_ok=True)
     
     # Check for existing checkpoint to resume from
+    # Set environment variable RESET_TRAINING=1 to start fresh
+    reset_training = os.environ.get('RESET_TRAINING', '0') == '1'
     start_round = 1
     checkpoint_file = 'checkpoints/latest_checkpoint.pth'
+    
+    if reset_training and os.path.exists(checkpoint_file):
+        print(f"\n{Color.YELLOW}⚠️  RESET_TRAINING=1 detected. Deleting checkpoint to start fresh...{Color.RESET}\n", flush=True)
+        try:
+            os.remove(checkpoint_file)
+            print(f"{Color.GREEN}✓ Checkpoint deleted. Starting fresh training.{Color.RESET}\n", flush=True)
+        except Exception as e:
+            print(f"{Color.YELLOW}⚠️  Could not delete checkpoint: {e}{Color.RESET}\n", flush=True)
     if os.path.exists(checkpoint_file):
         try:
             checkpoint = torch.load(checkpoint_file)
@@ -880,7 +974,10 @@ def run_federated_learning():
             print(f"\n{Color.YELLOW}📁 Resuming from round {checkpoint_round} (Accuracy: {server.global_accuracy:.2f}%, Best: {server.best_accuracy:.2f}%){Color.RESET}\n", flush=True)
             
             # CRITICAL: Render dashboard immediately after checkpoint resume
+            print("\n" * 5, flush=True)  # Add significant spacing
             dashboard.render()
+            sys.stdout.flush()
+            print("\n" * 2, flush=True)  # More spacing after render
             time.sleep(2)
         except Exception as e:
             print(f"\n{Color.YELLOW}⚠️  Could not load checkpoint: {e}{Color.RESET}\n")
@@ -921,7 +1018,7 @@ def run_federated_learning():
                     dashboard.log(f"Device {device.device_id} [{device.device_name}] training...")
                     sys.stdout.flush()
                     
-                    update = device.train_local(global_weights, config['local_epochs'])
+                    update = device.train_local(global_weights, config['local_epochs'], dashboard=dashboard)
                     
                     # Only include successful updates
                     if update['loss'] < 900:  # Filter out error returns
@@ -989,6 +1086,11 @@ def run_federated_learning():
                     dashboard.render()
                     sys.stdout.flush()
                     results = server.evaluate(test_loader)
+                    
+                    # NOTE: server.evaluate() already updates server.global_accuracy, server.global_loss, 
+                    # and appends to accuracy_history internally, so we just use the results for logging
+                    # No need to update again - it's already done in evaluate() method
+                    
                     dashboard.log(f"✓ Global test accuracy: {results['accuracy']:.1f}%")
                     
                     # RESEARCH-GRADE: Evaluate local models on same test set for fair comparison
